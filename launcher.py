@@ -60,4 +60,4 @@ def main():
  finally:lock.unlink(missing_ok=True)
 if __name__=='__main__':
  try:main()
- except Exception as e:print('Sync stopped:',e,flush=True);sys.exit(1)
+ except Exception as e:f.log('Sync stopped: '+str(e));sys.exit(1)

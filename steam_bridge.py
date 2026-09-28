@@ -28,7 +28,7 @@ def session(c,raw,base,ipc,sid):
  out=ipc/'sessions'/sid;out.mkdir(parents=True,exist_ok=True)
  def status(text):
   write(out/'status.txt',text)
-  print(time.strftime('%Y-%m-%d %H:%M:%S'),sid,text,flush=True)
+  l.f.log(time.strftime('%Y-%m-%d %H:%M:%S')+' '+sid+' '+text)
  status('正在检查 Git 远端最新状态，请勿关闭此窗口。')
  lock=base/'active.lock';fd=None
  try:

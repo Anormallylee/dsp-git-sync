@@ -28,7 +28,7 @@ class Remote:
    if self.run('remote','get-url','origin').decode().strip()!=self.remote:raise ValueError('Git cache belongs to another remote.')
   self.run('config','gc.auto','0')
  def command(self,*args):
-  return [self.bin,'-c','core.hooksPath='+str(self.hooks),'-c','core.autocrlf=false','-c','commit.gpgSign=false','--git-dir='+str(self.repo),*args]
+  return [self.bin,'-c','core.hooksPath='+str(self.hooks),'-c','core.autocrlf=false','-c','core.precomposeUnicode=true','-c','commit.gpgSign=false','--git-dir='+str(self.repo),*args]
  def run(self,*args,input=None,env=None):
   p=subprocess.run(self.command(*args),input=input,env=env or self.env,capture_output=True,timeout=3600)
   if p.returncode:
@@ -97,9 +97,9 @@ class Remote:
  def maintain(self,force=False):
   stats={k.strip():int(v) for k,v in (line.split(':',1) for line in self.run('count-objects','-v').decode().splitlines())}
   if not force and stats.get('size',0)<65536 and stats.get('packs',0)<20:return
-  print('Compacting local Git cache (remote upload already verified).',flush=True)
+  fs.f.log('Compacting verified local Git cache.')
   try:self.run('-c','pack.windowMemory=256m','-c','pack.threads=2','repack','-a','-d','-l','--window=10','--depth=20')
-  except RuntimeError:print('Git cache compaction deferred; verified progress is retained.',flush=True)
+  except RuntimeError:fs.f.log('Git cache compaction deferred; verified progress is retained.')
  def push(self,commit,parent):
   # A normal push rejects non-fast-forward history; never use force.
   self.run('push','--porcelain','origin',commit+':refs/heads/'+self.branch)
@@ -143,20 +143,20 @@ def receive(c,r,statefile,commit):
  fs.validate(desired)
  with tempfile.TemporaryDirectory(dir=base) as td:
   stage=Path(td);r.materialize(commit,stage/'remote')
-  source_by_hash={(v['sha256'],v['bytes']):k for k,v in current.items()}
+  source_by_hash={(v['sha256'],v['bytes']):k for k,v in current.items()};actual=fs.f.inventory(c,False)
   for k,v in desired.items():
    out=stage/'apply'/k;out.parent.mkdir(parents=True,exist_ok=True)
    if remote.get(k)==v:src=stage/'remote/files'/k
    else:
     local=source_by_hash.get((v['sha256'],v['bytes']))
     if local is None:raise ValueError('Missing local content for reconciliation.')
-    root,rel=local.split('/',1);src=c[root]/rel
+    src=actual[local]
    shutil.copy2(src,out)
   if r.fetch()!=commit:raise ValueError('Remote changed during preparation; retry.')
   backup=fs.apply(c,desired,current,stage/'apply',base)
  fs.atomic(statefile,state_for(r,commit,remote))
  r.maintain()
- print('Git receive verified; backup: '+str(backup),flush=True)
+ fs.f.log('Git receive verified; backup: '+str(backup))
  return commit
 
 def publish(c,r,statefile,parent):
@@ -172,9 +172,9 @@ def publish(c,r,statefile,parent):
   if current==m['files']:
    fs.atomic(statefile,state_for(r,parent,current));return parent
  with tempfile.TemporaryDirectory(dir=base) as td:
-  stage=Path(td)
+  stage=Path(td);actual=fs.f.inventory(c)
   for k in current:
-   root,rel=k.split('/',1);out=stage/'files'/k;out.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(c[root]/rel,out)
+   root,rel=k.split('/',1);out=stage/'files'/k;out.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(actual[k],out)
    if fs.f.sha(out)!=current[k]['sha256']:raise ValueError('Live data changed while staging; retry after the game exits.')
   (stage/'.gitattributes').write_bytes(ATTRIBUTES);fs.atomic(stage/'manifest.json',{'format':'dsp-git-sync-v1','files':current})
   commit=r.commit(stage,parent)
@@ -187,5 +187,5 @@ def publish(c,r,statefile,parent):
   if r.fetch()!=commit:raise ValueError('Remote changed before upload confirmation.')
  fs.atomic(statefile,state_for(r,commit,current));(base/'publish-attempt.json').unlink()
  r.maintain()
- print('Git upload confirmed: '+commit[:12],flush=True)
+ fs.f.log('Git upload confirmed: '+commit[:12])
  return commit

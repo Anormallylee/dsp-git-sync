@@ -54,3 +54,10 @@ class Transactions(GitFixture,unittest.TestCase):
    with self.assertRaises(ValueError):g.receive(self.b,self.rb,self.sb,v2)
   self.assertEqual(target.read_bytes(),b'external-new-save')
   self.assertEqual(json.loads(self.sb.read_text())['revision'],v)
+ def test_logging_cannot_fail_on_non_utf8_console(self):
+  import io
+  stream=io.TextIOWrapper(io.BytesIO(),encoding='cp1252')
+  files=fs.scan(self.a);key='data/Blueprint/中文.txt';base={**files};local={**files};remote={**files}
+  local[key]={'bytes':1,'sha256':'a'*64};remote[key]={'bytes':1,'sha256':'b'*64}
+  with patch('sys.stdout',stream):result=fs.merge(base,local,remote)
+  self.assertTrue(any('conflict-local' in k for k in result))

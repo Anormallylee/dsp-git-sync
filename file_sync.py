@@ -1,5 +1,5 @@
 """Manifest checks, three-way reconciliation, and backed-up file transactions."""
-import hashlib,json,os,re,shutil,errno
+import hashlib,json,os,re,shutil,errno,unicodedata
 from pathlib import Path,PurePosixPath
 import sync_core as f
 HASH=re.compile(r"[0-9a-f]{64}")
@@ -22,7 +22,7 @@ def validate(files,refs=False,complete=True):
  folded=set();total=0
  for k,v in files.items():
   p=PurePosixPath(k)
-  if str(p)!=k or p.is_absolute() or not (k in f.FILES or any(k.startswith(t) for t in f.TREES)):raise ValueError('非法同步路径：'+k)
+  if unicodedata.normalize('NFC',k)!=k or str(p)!=k or p.is_absolute() or not (k in f.FILES or any(k.startswith(t) for t in f.TREES)):raise ValueError('非法同步路径：'+k)
   if any(x in ('..','.') or any(ord(ch)<32 or ch in '<>\"|?*' for ch in x) or ':' in x or '\\' in x or x.endswith((' ','.')) or x.split('.')[0].upper() in {'CON','PRN','AUX','NUL',*['COM'+str(i) for i in range(1,10)],*['LPT'+str(i) for i in range(1,10)]} for x in p.parts):raise ValueError('路径不兼容Windows：'+k)
   if k.casefold() in folded or any('stutterprobe' in x.lower() for x in p.parts):raise ValueError('大小写冲突或不允许同步的文件：'+k)
   folded.add(k.casefold())
@@ -51,7 +51,7 @@ def merge(base,local,remote):
   elif a is not None and r is not None and k.lower().endswith('.txt'):
    conflict=k[:-4]+'.conflict-local-'+a['sha256'][:12]+'.txt'
    if conflict in keys or conflict in result:raise ValueError('蓝图冲突副本已存在，需人工检查：'+k)
-   result[conflict]=a;chosen=r;print('蓝图双端修改，保留本地冲突副本：'+conflict,flush=True)
+   result[conflict]=a;chosen=r;f.log('蓝图双端修改，保留本地冲突副本：'+conflict)
   else:raise ValueError('蓝图删除/修改冲突，保留双方并停止：'+k)
   if chosen is not None:result[k]=chosen
  validate(result);return result
@@ -63,7 +63,10 @@ def apply(c,desired,current,staged,base):
  if journal.exists():raise ValueError('存在未完成的文件事务，请先检查备份，禁止自动继续。')
  changed=sorted(k for k in set(current)|set(desired) if current.get(k)!=desired.get(k))
  backup=c['backup']/('incremental-'+f.token());backup.mkdir(parents=True,exist_ok=True)
- def target(k):root,rel=k.split('/',1);return c[root]/rel
+ actual=f.inventory(c,False)
+ def target(k):
+  if k in actual:return actual[k]
+  root,rel=k.split('/',1);return c[root]/rel
  # Prepare every replacement before touching the live files.
  for k in changed:
   if k in desired:

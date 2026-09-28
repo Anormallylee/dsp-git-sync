@@ -1,5 +1,5 @@
 """Read-only inventory of supported DSP user data and loader files."""
-import os,sys,json,hashlib,datetime,uuid,subprocess
+import os,sys,json,hashlib,datetime,uuid,subprocess,unicodedata
 from pathlib import Path
 TREES=['data/Save/','data/Blueprint/','data/Blueprints/','game/BepInEx/core/','game/BepInEx/plugins/','game/BepInEx/patchers/','game/BepInEx/config/']
 FILES=['game/winhttp.dll','game/doorstop_config.ini','game/.doorstop_version']
@@ -20,7 +20,10 @@ def inventory(roots,require_complete=True):
   elif p.exists():
    for f in p.rglob('*'):
     if f.is_symlink():raise ValueError('范围内有符号链接：'+str(f))
-    if f.is_file() and not excluded(f.relative_to(p)) and not (key=='data/Save/' and f.suffix not in ['.dsv','.moddsv']):result[key+f.relative_to(p).as_posix()]=f
+    if f.is_file() and not excluded(f.relative_to(p)) and not (key=='data/Save/' and f.suffix not in ['.dsv','.moddsv']):
+     name=unicodedata.normalize('NFC',key+f.relative_to(p).as_posix())
+     if name in result:raise ValueError('Unicode-normalized paths collide: '+name)
+     result[name]=f
  if require_complete and not any(k.startswith('data/Save/') and k.endswith('.dsv') for k in result):raise ValueError('没有存档。')
  if require_complete and not any(k.startswith('game/BepInEx/core/') for k in result):raise ValueError('没有 BepInEx core；请检查游戏目录。')
  if require_complete and not all(k in result for k in FILES):raise ValueError('缺少 Doorstop 启动文件。')
@@ -34,3 +37,7 @@ def ensure_closed():
   r=subprocess.run(['ps','-axo','comm='],capture_output=True,text=True,check=True)
   running=any('dspgame.exe' in line.lower() for line in r.stdout.splitlines())
  if running:raise ValueError('游戏仍在运行，请正常保存并退出后再操作。')
+
+def log(message):
+ try:print(message,flush=True)
+ except UnicodeEncodeError:print(str(message).encode('ascii',errors='backslashreplace').decode('ascii'),flush=True)

@@ -94,4 +94,14 @@ class GitHandoff(GitFixture,unittest.TestCase):
  def test_maintenance_preserves_committed_state(self):
   v=self.initialize();self.assertTrue(hasattr(self.ra,'maintain'),'Cache compaction is not implemented')
   self.ra.maintain(force=True);self.assertEqual(self.ra.manifest(v)['files'],fs.scan(self.a))
+ def test_unicode_normalization_is_portable(self):
+  import unicodedata
+  name=unicodedata.normalize('NFD','café蓝图.txt');canonical=unicodedata.normalize('NFC',name)
+  (self.a['data']/'Blueprint'/name).write_bytes(b'unicode')
+  v=g.publish(self.a,self.ra,self.sa,None)
+  self.assertIn('data/Blueprint/'+canonical,self.ra.manifest(v)['files'])
+  # Receiver already has a decomposed-name file, which must be updated in place.
+  (self.b['data']/'Blueprint'/name).write_bytes(b'old')
+  g.receive(self.b,self.rb,self.sb,v)
+  entries=fs.f.inventory(self.b);self.assertEqual(entries['data/Blueprint/'+canonical].read_bytes(),b'unicode')
 if __name__=='__main__':unittest.main()
