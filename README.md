@@ -4,6 +4,8 @@
 
 这个工具就是为这件事做的。源码公开，**游戏数据放在我自己的私有 GitLab 仓库里**。
 
+**这是双向交接：两端均在启动前接收、退出后上传。**`init-download` 只表示第二台设备首次以远端为起点，不会把它变成只下载的客户端。当前为 [v0.1.0 预览版](https://github.com/Anormallylee/dsp-git-sync/releases/tag/v0.1.0)。
+
 ## 我为什么折腾这个
 
 我平时用 MacBook Pro，通过 CrossOver 跑 Steam 版《戴森球计划》。工厂规模逐渐变大以后，我遇到了明显卡顿，甚至画面停住、音乐还在播放的情况。后来拿一台 Windows 电脑试了同一个存档，体感顺畅了不少，于是又多了一个需求：两台电脑之间怎么接着玩？
@@ -20,7 +22,7 @@
 
 ## 实际测到了什么
 
-下面是我这次测试的单个存档，不代表每个人的存档或网络都能达到同样效果。
+下面是用同一路径依次替换几份真实存档得到的**单文件测试**，不是整个存档目录的同步计时，也不代表其他存档或网络都能达到同样效果。
 
 | 测试 | 数据量 / 耗时 |
 |---|---:|
@@ -129,7 +131,7 @@ docker exec gitlab gitlab-ctl status
 
 1. 点 Steam 原来的“开始游戏”。包装程序先让 Python 工具检查私有 Git 仓库。
 2. 工具核对上次同步基线、检查冲突、验证哈希，给需要替换的文件留备份，然后启动游戏。
-3. 正常退出游戏后，提交最终的存档、蓝图和 Mod 状态，再 push。
+3. 正常退出游戏后，有变化则提交最终的存档、蓝图和 Mod 状态，再 push；没有变化则确认当前状态，不创建空提交。
 4. 等同步窗口显示完成，再换另一台电脑。
 
 游戏目录本身不是 Git 工作区；Git 缓存在另一个目录中。程序不强推，也不尝试合并二进制存档。相同存档组或 Mod 在两边都变了，会停下来，保留数据等待处理。
@@ -142,11 +144,13 @@ docker exec gitlab gitlab-ctl status
 
 ## 安装
 
-需要 Python 3.10+、Git，以及两端已经配置好的私有仓库访问凭据。凭据放 Git Credential Manager、系统钥匙串或 SSH 配置，不能写进远端 URL、config.json 或公开仓库。
+当前版本面向已安装 BepInEx 和 Doorstop 的游戏，会检查加载器文件，尚未提供纯原版游戏模式。需要 Python 3.10+、Git，以及两端已经配置好的私有仓库访问凭据。凭据放 Git Credential Manager、系统钥匙串或 SSH 配置，不能写进远端 URL、config.json 或公开仓库。
 
 - **Windows Steam：**参考 [Windows 安装与升级说明](WINDOWS-HANDOFF.md)。
 - **macOS + CrossOver：**把工具放到固定本地目录，根据 `config.macos.example.json` 创建本机 `config.json`，填写游戏、存档、备份、Git 和容器路径。初次源端只在远端数据分支为空时执行 `python launcher.py init-source`；其他设备先备份、检查本地变化，再执行 `init-download`。随后执行 `python configure_macos.py`，按输出设置 Steam 启动选项。
 - 工具也可以完全不经过 ZIP：`git clone https://github.com/Anormallylee/dsp-git-sync.git` 获取源码，再从 Releases 下载单独的 `SteamSync.exe` 放进工具目录。也可以安装 MinGW-w64 后运行 `./build_wrapper.sh` 自行编译。它是本项目的包装程序，不是游戏文件。
+
+**首次 `init-download` 按远端内容初始化，会备份并替换有差异的本地同步文件，不进行已有基线上的三方合并。**请先检查本机独有的蓝图、Mod 和存档；不要把这个命令当成无改动的查看操作。后续正常交接才使用已有基线做冲突检查。
 
 Mac 后台进程每秒检查一次本地启动请求，不持续轮询远端。Windows 由包装程序按需启动 Python worker。
 
@@ -156,11 +160,23 @@ Mac 后台进程每秒检查一次本地启动请求，不持续轮询远端。W
 
 同步：`Save/*.dsv`、`*.moddsv`、`Blueprint/`、`Blueprints/`、BepInEx 的 core/plugins/patchers/config，以及 Doorstop 加载文件。
 
-不包含游戏主程序、游戏资源、显示设置、系统凭据和本机配置。临时隐藏文件及旧诊断 StutterProbe Mod 会被排除。远端内容必须通过完整清单、路径、文件类型和 SHA-256 校验。
+同步范围不含游戏主程序、游戏资源、游戏显示设置、系统凭据存储和同步工具的本机配置。**Mod 配置在同步范围内，工具不会自动识别其中的敏感字段，数据仓库应保持私有。**除单独列入范围的 `.doorstop_version` 外，扫描目录中的隐藏名称项及旧诊断 StutterProbe Mod 会被排除。远端内容必须通过完整清单、路径、文件类型和 SHA-256 校验。
 
 备份和提交历史会保留。工具会在同步成功后按需要压紧本地 Git 缓存，避免每次保存都长期留下完整的松散对象；这不是删除历史。备份和历史仍会逐渐占用空间，清理需要单独制定保留策略。
 
-**这个公开仓库只放工具源码。**我用 GitHub 托管源码，用私有 GitLab 放实际数据。GitHub 普通 Git 仓库限制超过 100 MiB 的文件，不适合直接放这些未拆分的存档；不要把本项目的 GitHub 地址当作数据远端。
+**这个公开仓库只放工具源码。**我用 GitHub 托管源码，用私有 GitLab 放实际数据。[GitHub 普通 Git 仓库会阻止超过 100 MiB 的文件](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github)，不适合直接放这些未拆分的存档；不要把本项目的 GitHub 地址当作数据远端。
+
+## 真实设备验证（2026-09-29）
+
+这次已经完成 Windows 和 Mac + CrossOver 的真实 Steam 交接：
+
+- Windows 从 Steam 启动前完成接收检查，正常保存退出后自动上传；另一端核对 GitLab 提交一致。
+- Mac 随后从 Steam 启动，接收 Windows 的进度，游玩并正常退出后自动上传；本地文件、同步基线与远端提交一致，无待上传状态和错误日志。
+- 正式初始化的 749 个文件、约 1.39 GiB 原始数据，曾使用全新缓存经公网下载并逐文件验证 SHA-256。原始体积不等于网络传输量。
+
+这次 Mac 退出后，从检测到游戏退出到显示同步完成约 **73 秒**，期间包含本地 Git 缓存整理。这是一次完整流程计时，不能与前面单文件下载的 12.6 秒直接比较，也不是以后每次同步的耗时保证。
+
+这些结果只覆盖这次设备、游戏和 Mod 组合，不代表所有配置都已验证。首次全量同步仍可能较慢，后续传输量取决于变化内容及 Git 的差分效果。
 
 ## 开发与验证
 
