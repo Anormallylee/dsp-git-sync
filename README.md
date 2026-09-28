@@ -58,7 +58,7 @@ private-data-repository / sync-v1 branch
 
 Git 自己处理对象、压缩和差分传输；没有每次手动打 ZIP、上传 ZIP、再解 ZIP 的环节，也不用经过 ZIP 文件名编码这一层。程序在校验与导入时仍会使用临时目录；这是为了保护现有进度，不是把游戏数据重新压成一个同步包。
 
-中文路径按 UTF-8 处理，并检查 Windows 不接受的文件名和大小写冲突。Mac 上合法的文件名不一定能原样落到 Windows，所以发现这种情况会报错，不会悄悄改名。
+中文路径按 UTF-8 处理，清单中的 Unicode 名称统一为 NFC，并检查 Windows 不接受的文件名、大小写冲突及名称归一化后的重复。Mac 上合法的文件名不一定能原样落到 Windows，所以发现这种情况会报错，不会悄悄改名。
 
 旧同步系统留下的 ZIP 可能需要在**首次迁移**时读取一次。工具本身的安装压缩包和游戏数据的同步格式是两回事。
 
@@ -134,7 +134,7 @@ docker exec gitlab gitlab-ctl status
 
 - **Windows Steam：**参考 [Windows 安装与升级说明](WINDOWS-HANDOFF.md)。
 - **macOS + CrossOver：**把工具放到固定本地目录，根据 `config.macos.example.json` 创建本机 `config.json`，填写游戏、存档、备份、Git 和容器路径。初次源端只在远端数据分支为空时执行 `python launcher.py init-source`；其他设备先备份、检查本地变化，再执行 `init-download`。随后执行 `python configure_macos.py`，按输出设置 Steam 启动选项。
-- 下载发布包可获得本项目的 `SteamSync.exe`。也可以安装 MinGW-w64 后运行 `./build_wrapper.sh` 自行编译。它是本项目的包装程序，不是游戏文件。
+- 工具也可以完全不经过 ZIP：`git clone https://github.com/Anormallylee/dsp-git-sync.git` 获取源码，再从 Releases 下载单独的 `SteamSync.exe` 放进工具目录。也可以安装 MinGW-w64 后运行 `./build_wrapper.sh` 自行编译。它是本项目的包装程序，不是游戏文件。
 
 Mac 后台进程每秒检查一次本地启动请求，不持续轮询远端。Windows 由包装程序按需启动 Python worker。
 
