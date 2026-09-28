@@ -115,6 +115,16 @@ docker exec gitlab gitlab-ctl status
 
 参考：[Git 大文件阈值](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corebigFileThreshold)、[Gitaly 管理的配置](https://docs.gitlab.com/administration/gitaly/configure_gitaly/#git-configuration-set-by-gitaly)、[GitLab 故障排查示例](https://docs.gitlab.com/administration/gitaly/troubleshooting/#error-fatal-deflate-error-0-when-downloading-repository-as-zip-file)。
 
+### 首次上传还要看公网入口限制
+
+完整目录的首次初始化又让我遇到一个问题：经公网地址 push 返回了 **HTTP 413**。差分测试只有几 MiB，首次基线却可能很大，这两件事不能混为一谈。
+
+如果 GitLab 前面还有 Cloudflare 或其他反向代理，需要同时检查请求体大小限制。提高 `core.bigFileThreshold` 只影响 Git 是否尝试差分，**不会解除代理的上传上限**。可以通过已有的直连或 SSH 入口初始化；服务部署在同一台机器时，也可以通过可信本机入口导入同一个提交，再从正常远端核验。不要为了重试而强推、删基线，或把访问令牌写进 URL。
+
+后续差分通常小得多，但新增大量 Mod、多个存档同时变化等情况仍可能产生大包。遇到限制应保留未上传状态并解决连接问题，不能把失败标记为同步成功。
+
+参考：[Cloudflare HTTP 413 与上传大小限制](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)。
+
 ## 现在的使用流程
 
 1. 点 Steam 原来的“开始游戏”。包装程序先让 Python 工具检查私有 Git 仓库。
