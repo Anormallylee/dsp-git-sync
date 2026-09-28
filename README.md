@@ -1,9 +1,161 @@
 # DSP Git Sync
 
-An open-source Steam launch/exit bridge for Dyson Sphere Program saves, blueprints, and BepInEx mods, using a **private Git repository** for binary delta transport.
+我想做的事情其实很简单：在 Mac 上退出《戴森球计划》，换到 Windows 后，接着刚才的进度玩。存档、蓝图、Mod 都一起带过去，最好还是点 Steam 原来的“开始游戏”，不用额外记一套操作。
 
-Implementation in progress. Source code belongs in this public repository; game data, binaries from the game or third-party mods, credentials, machine configuration and backup files do not.
+这个工具就是为这件事做的。源码公开，**游戏数据放在我自己的私有 GitLab 仓库里**。
 
-Target platforms: Windows Steam and macOS Steam through CrossOver. Python 3.10+ and Git required. One device at a time. No Git LFS: the data server must accept large ordinary Git blobs and support delta packing at their size.
+## 我为什么折腾这个
 
-License: MIT.
+我平时用 MacBook Pro，通过 CrossOver 跑 Steam 版《戴森球计划》。工厂规模逐渐变大以后，我遇到了明显卡顿，甚至画面停住、音乐还在播放的情况。后来拿一台 Windows 电脑试了同一个存档，体感顺畅了不少，于是又多了一个需求：两台电脑之间怎么接着玩？
+
+一开始我考虑过 Google Drive，后来因为那台 Windows 不是日常个人用机，不想把自己的整个网盘带过去，就换成了 OneDrive。
+
+但真正麻烦的不是“文件能不能传过去”，而是整套流程：启动前到底有没有拿到最新进度？退出后是不是已经传完？刚下载的新蓝图会不会被另一台电脑覆盖？Mod 的配置和存档附属文件能不能一起走？
+
+最初的方案把存档、蓝图和 Mod 打成完整 ZIP 快照。能用，但一次大约 596 MiB，压缩、上传、检查都要等。后来改成文件级增量，没变的蓝图和 Mod 不用再传了，可是我的**单个存档就有约 223 MiB**。存档一变，还是要重新传整个文件。
+
+我当时的想法是：既然都做了启动器，为什么不直接让 Git 处理版本和差分？于是拿本地两份真实存档，建了一个私有测试仓库试了一遍。
+
+结果确实有用，但又踩到了 GitLab 服务端的配置坑。
+
+## 实际测到了什么
+
+下面是我这次测试的单个存档，不代表每个人的存档或网络都能达到同样效果。
+
+| 测试 | 数据量 / 耗时 |
+|---|---:|
+| 原始存档 | 约 223 MiB |
+| 单个存档 ZIP 压缩（deflate level 1） | 约 98 MiB |
+| Git 首次上传基线 | 95.16 MiB |
+| 相邻两份存档的 Git 差分上传 | **4.46 MiB** |
+| 另一份存档的差分上传 | **4.17 MiB** |
+| GitLab 原配置下，同一增量下载 | 97.96 MiB / 83.7 秒 |
+| 修改 GitLab 服务配置后，再下载同一增量 | **4.48 MiB / 12.6 秒** |
+
+下载还原后，我也检查了 SHA-256，和源文件完全一致。这里的上传、下载数据量来自 Git 的传输报告，不包含全部 HTTP/TLS 协议开销。
+
+我的结论是：**这些存档很适合 Git 差分，但不能只看上传快了，就认定下载也会一样快。服务端如何打包同样重要。**
+
+## 不再给游戏数据打 ZIP
+
+新流程直接保存原始目录和文件：
+
+```text
+private-data-repository / sync-v1 branch
+├── .gitattributes
+├── manifest.json
+└── files
+    ├── data
+    │   ├── Save
+    │   ├── Blueprint
+    │   └── Blueprints
+    └── game
+        ├── BepInEx
+        ├── winhttp.dll
+        ├── doorstop_config.ini
+        └── .doorstop_version
+```
+
+Git 自己处理对象、压缩和差分传输；没有每次手动打 ZIP、上传 ZIP、再解 ZIP 的环节，也不用经过 ZIP 文件名编码这一层。程序在校验与导入时仍会使用临时目录；这是为了保护现有进度，不是把游戏数据重新压成一个同步包。
+
+中文路径按 UTF-8 处理，并检查 Windows 不接受的文件名和大小写冲突。Mac 上合法的文件名不一定能原样落到 Windows，所以发现这种情况会报错，不会悄悄改名。
+
+旧同步系统留下的 ZIP 可能需要在**首次迁移**时读取一次。工具本身的安装压缩包和游戏数据的同步格式是两回事。
+
+## 我踩到的 GitLab 配置坑
+
+我的测试环境是 **GitLab CE 18.11.1**，运行在 Docker 中。
+
+普通 Git 的 `core.bigFileThreshold` 默认是 512 MiB。超过配置阈值的文件会做普通压缩，但不尝试跨版本差分。GitLab 的 Gitaly 下载进程在我这里却带着 `core.bigFileThreshold=50m`。
+
+所以我在本机上传时只传了 4.46 MiB，但另一端下载时，服务器又发回了接近 98 MiB。
+
+### 只改仓库，没有生效
+
+我先只对那个私有仓库设置了 `core.bigFileThreshold=512m`，重新测试，结果没有改善。直接检查进程后才确认：Gitaly 启动 Git 时传入的 50m 覆盖了仓库设置。
+
+这一步很容易产生误判：`git config --local --get core.bigFileThreshold` 能读到 512m，并不意味着 GitLab 下载进程实际用了它。
+
+### 修改服务配置后，实测生效
+
+我备份了 `/etc/gitlab/gitlab.rb`，在 **Gitaly 服务级配置**里设置：
+
+```ruby
+gitaly['configuration'] = {
+  git: {
+    config: [
+      { key: 'core.bigFileThreshold', value: '512m' }
+    ]
+  }
+}
+```
+
+**如果已有 `gitaly['configuration']`、`git` 或 `config` 配置，要把这一项合并进去，保留其他设置，不要直接用上面的片段覆盖原配置。**也要检查 Docker 的 `GITLAB_OMNIBUS_CONFIG` 是否已经包含相关配置。
+
+然后重新配置。我的容器名是 `gitlab`：
+
+```sh
+docker exec gitlab gitlab-ctl reconfigure
+docker exec gitlab gitlab-ctl status
+```
+
+直接安装 GitLab Linux package 的环境，使用 `sudo gitlab-ctl reconfigure`。应用配置可能重载或重启服务，应在没有其他任务受影响的时候操作。
+
+生成的 Gitaly 配置通常在 `/var/opt/gitlab/gitaly/config.toml`，可以检查是否包含设置，但**最终要以真实 fetch 的传输量和文件校验为准**。我这里重测从 97.96 MiB 降到了 4.48 MiB。
+
+需要注意：
+
+- 这是服务级配置，影响该 Gitaly 服务管理的仓库，并非只影响游戏存档仓库。
+- 提高阈值可能增加服务器的 CPU 和内存消耗。512m 是我这次测试的值，不是所有环境都应照抄的推荐值。
+- 私有仓库和 GitLab 实例本身也必须允许这么大的普通 Git 文件；差分包小，不代表原始文件小。
+- 不要把这些存档切到 Git LFS。LFS 对象传输不是这里验证过的普通 Git 跨版本差分流程。
+- 不要直接修改生成的 `config.toml` 当作持久配置，下一次 reconfigure 可能覆盖它。
+
+官方文档也有一处值得留意：配置参考将该参数列为 Gitaly 自行管理、不能通过 `git.config` 覆盖；故障排查页又提供了服务级修改的示例。**我只能确认上面的方法在这次 18.11.1 部署中实测有效，不把它当作所有版本的保证。**
+
+参考：[Git 大文件阈值](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corebigFileThreshold)、[Gitaly 管理的配置](https://docs.gitlab.com/administration/gitaly/configure_gitaly/#git-configuration-set-by-gitaly)、[GitLab 故障排查示例](https://docs.gitlab.com/administration/gitaly/troubleshooting/#error-fatal-deflate-error-0-when-downloading-repository-as-zip-file)。
+
+## 现在的使用流程
+
+1. 点 Steam 原来的“开始游戏”。包装程序先让 Python 工具检查私有 Git 仓库。
+2. 工具核对上次同步基线、检查冲突、验证哈希，给需要替换的文件留备份，然后启动游戏。
+3. 正常退出游戏后，提交最终的存档、蓝图和 Mod 状态，再 push。
+4. 等同步窗口显示完成，再换另一台电脑。
+
+游戏目录本身不是 Git 工作区；Git 缓存在另一个目录中。程序不强推，也不尝试合并二进制存档。相同存档组或 Mod 在两边都变了，会停下来，保留数据等待处理。
+
+独立新增的蓝图可以合并；同名文本蓝图双方修改，会保留本地冲突副本。上传失败、确认丢失和导入中断都有状态记录，不能靠删掉状态文件来假装同步完成。
+
+这不是多人同时玩的方案。**两台设备顺序交接，等同步完成再切换。**
+
+## 安装
+
+需要 Python 3.10+、Git，以及两端已经配置好的私有仓库访问凭据。凭据放 Git Credential Manager、系统钥匙串或 SSH 配置，不能写进远端 URL、config.json 或公开仓库。
+
+- **Windows Steam：**参考 [Windows 安装与升级说明](WINDOWS-HANDOFF.md)。
+- **macOS + CrossOver：**把工具放到固定本地目录，根据 `config.macos.example.json` 创建本机 `config.json`，填写游戏、存档、备份、Git 和容器路径。初次源端只在远端数据分支为空时执行 `python launcher.py init-source`；其他设备先备份、检查本地变化，再执行 `init-download`。随后执行 `python configure_macos.py`，按输出设置 Steam 启动选项。
+- 下载发布包可获得本项目的 `SteamSync.exe`。也可以安装 MinGW-w64 后运行 `./build_wrapper.sh` 自行编译。它是本项目的包装程序，不是游戏文件。
+
+Mac 后台进程每秒检查一次本地启动请求，不持续轮询远端。Windows 由包装程序按需启动 Python worker。
+
+从旧系统迁移时，要先确认旧系统的最新状态并保留本地新增内容。不要只按文件修改时间猜哪台电脑更新，也不要让旧、新两个同步工具同时上传。
+
+## 同步范围与数据保留
+
+同步：`Save/*.dsv`、`*.moddsv`、`Blueprint/`、`Blueprints/`、BepInEx 的 core/plugins/patchers/config，以及 Doorstop 加载文件。
+
+不包含游戏主程序、游戏资源、显示设置、系统凭据和本机配置。临时隐藏文件及旧诊断 StutterProbe Mod 会被排除。远端内容必须通过完整清单、路径、文件类型和 SHA-256 校验。
+
+备份和提交历史会保留。工具会在同步成功后按需要压紧本地 Git 缓存，避免每次保存都长期留下完整的松散对象；这不是删除历史。备份和历史仍会逐渐占用空间，清理需要单独制定保留策略。
+
+**这个公开仓库只放工具源码。**我用 GitHub 托管源码，用私有 GitLab 放实际数据。GitHub 普通 Git 仓库限制超过 100 MiB 的文件，不适合直接放这些未拆分的存档；不要把本项目的 GitHub 地址当作数据远端。
+
+## 开发与验证
+
+```sh
+python -m unittest discover -s tests -v
+```
+
+测试使用人工构造的小文件和临时裸 Git 仓库，覆盖传输、蓝图合并、删除、冲突、上传恢复、内容篡改与回滚。跨平台 CI 和这些测试不能代替真实设备上的 Steam 启动、保存、退出验证。
+
+MIT License。欢迎反馈可复现的问题；提交日志前请移除自己的账号、路径、私有仓库地址和凭据。

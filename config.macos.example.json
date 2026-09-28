@@ -1,0 +1,10 @@
+{
+  "data": "~/Documents/Dyson Sphere Program",
+  "game": "~/Library/Application Support/CrossOver/Bottles/YOUR_BOTTLE/drive_c/Program Files (x86)/Steam/steamapps/common/Dyson Sphere Program",
+  "backup": "~/Documents/DSP-Sync-Backups",
+  "git_remote": "https://YOUR-GITLAB/YOUR-USER/YOUR-PRIVATE-DATA-REPO.git",
+  "git_branch": "sync-v1",
+  "git": "/opt/homebrew/bin/git",
+  "bridge_dir": "~/Library/Application Support/CrossOver/Bottles/YOUR_BOTTLE/drive_c/DSP-Sync/ipc",
+  "bridge_windows_ipc": "C:\\DSP-Sync\\ipc"
+}

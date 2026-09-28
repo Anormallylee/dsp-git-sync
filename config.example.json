@@ -1,0 +1,8 @@
+{
+  "data": "C:/Users/YOUR_USER/Documents/Dyson Sphere Program",
+  "game": "C:/Program Files (x86)/Steam/steamapps/common/Dyson Sphere Program",
+  "backup": "C:/Users/YOUR_USER/Documents/DSP-Sync-Backups",
+  "git_remote": "https://YOUR-GITLAB/YOUR-USER/YOUR-PRIVATE-DATA-REPO.git",
+  "git_branch": "sync-v1",
+  "git": "git"
+}
