@@ -138,6 +138,8 @@ docker exec gitlab gitlab-ctl status
 
 这不是多人同时玩的方案。**两台设备顺序交接，等同步完成再切换。**
 
+目前启动前和退出后都需要访问 Git 远端，没有自动离线放行模式。如果 GitLab 部署在日常用的电脑上，那台电脑休眠、关机或 Docker 停止后，另一台设备就无法完成同步检查；自托管服务需要保持可达。
+
 ## 安装
 
 需要 Python 3.10+、Git，以及两端已经配置好的私有仓库访问凭据。凭据放 Git Credential Manager、系统钥匙串或 SSH 配置，不能写进远端 URL、config.json 或公开仓库。
