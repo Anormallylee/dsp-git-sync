@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+config.json
+bridge.ini
+ipc/
+state/
+backups/
+dist/
+*.dsv
+*.moddsv
+*.dll
+*.zip
+*.exe
+*.pack
+*.key
+.env
