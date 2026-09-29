@@ -1,5 +1,5 @@
 """Private Git transport. The bare cache is separate from live game data."""
-import hashlib,json,os,re,shutil,subprocess,tarfile,tempfile,time
+import base64,hashlib,json,os,re,shutil,subprocess,tarfile,tempfile,time
 from pathlib import Path
 from urllib.parse import urlsplit
 import file_sync as fs
@@ -13,6 +13,11 @@ class Remote:
   if self.remote.startswith('-') or '\n' in self.remote or '\r' in self.remote:raise ValueError('Invalid Git remote')
   u=urlsplit(self.remote)
   if u.scheme in ('http','https') and (u.username or u.password):raise ValueError('Use the OS Git credential helper; do not put credentials in URLs.')
+  self.local_push_url=raw.get('git_local_push_url')
+  if self.local_push_url:
+   v=urlsplit(self.local_push_url)
+   if u.scheme!='https' or v.scheme not in ('http','https') or v.hostname not in ('localhost','127.0.0.1','::1') or v.username or v.password or v.query or v.fragment or v.path!=u.path:
+    raise ValueError('Local push URL must point to the same HTTPS repository through loopback, without embedded credentials.')
   if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*',self.branch) or '..' in self.branch or self.branch.endswith(('/','.lock')):raise ValueError('Invalid sync branch')
   self.repo=Path(raw['git_cache']).expanduser().resolve();self.repo.parent.mkdir(parents=True,exist_ok=True)
   self.env=dict(os.environ,GIT_TERMINAL_PROMPT='0',GCM_INTERACTIVE='Never',GIT_LFS_SKIP_SMUDGE='1',LC_ALL='C')
@@ -102,7 +107,16 @@ class Remote:
   except RuntimeError:fs.f.log('Git cache compaction deferred; verified progress is retained.')
  def push(self,commit,parent):
   # A normal push rejects non-fast-forward history; never use force.
-  self.run('push','--porcelain','origin',commit+':refs/heads/'+self.branch)
+  if not self.local_push_url:
+   self.run('push','--porcelain','origin',commit+':refs/heads/'+self.branch);return
+  u=urlsplit(self.remote)
+  answer=subprocess.run([self.bin,'credential','fill'],input=('protocol=https\nhost='+u.netloc+'\n\n').encode(),env=self.env,capture_output=True,timeout=30)
+  if answer.returncode:raise RuntimeError('Git credential helper could not supply credentials for the configured remote.')
+  fields=dict(line.split('=',1) for line in answer.stdout.decode().splitlines() if '=' in line)
+  if not fields.get('username') or not fields.get('password'):raise RuntimeError('Git credential helper returned incomplete credentials.')
+  token=base64.b64encode((fields['username']+':'+fields['password']).encode()).decode()
+  env=dict(self.env,GIT_CONFIG_COUNT='2',GIT_CONFIG_KEY_0='http.'+self.local_push_url+'.extraHeader',GIT_CONFIG_VALUE_0='Authorization: Basic '+token,GIT_CONFIG_KEY_1='http.followRedirects',GIT_CONFIG_VALUE_1='false')
+  self.run('push','--porcelain',self.local_push_url,commit+':refs/heads/'+self.branch,env=env)
 
 def state_for(r,commit,files):
  return {'backend':'git','remote':r.remote,'branch':r.branch,'revision':commit,'files':files,'fingerprint':fs.fingerprint(files)}

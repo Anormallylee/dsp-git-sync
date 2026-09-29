@@ -125,6 +125,10 @@ docker exec gitlab gitlab-ctl status
 
 后续差分通常小得多，但新增大量 Mod、多个存档同时变化等情况仍可能产生大包。遇到限制应保留未上传状态并解决连接问题，不能把失败标记为同步成功。
 
+如果 GitLab 就运行在 Mac 本机，Mac 的 `config.json` 可额外设置 `git_local_push_url`，指向**同一仓库**的本机回环入口，例如 `http://127.0.0.1:8081/YOUR-USER/YOUR-PRIVATE-DATA-REPO.git`。此设置只改变上传入口；启动前仍从常规 `git_remote` 检查和下载。工具从本机 Git 凭据管理器读取常规地址的授权，仅在该次上传的进程内用于本机入口，不写入配置或公开仓库。Windows 不应照搬 Mac 的回环地址；它需要能从 Windows 访问的 GitLab 入口。
+
+这次实际游玩后，多个大存档一同变化，公网 push 再次中断并阻止下次启动。未上传提交和本地存档都保留着；我经本机入口补传原提交，确认远端与本地一致，再把 Mac 的上传入口固定到本机。这个改动解决的是当前 Mac 的上传路径；其他设备若也遇到大包限制，需要为它们解决自己的连接方式。
+
 参考：[Cloudflare HTTP 413 与上传大小限制](https://developers.cloudflare.com/support/troubleshooting/http-status-codes/4xx-client-error/error-413/)。
 
 ## 现在的使用流程
