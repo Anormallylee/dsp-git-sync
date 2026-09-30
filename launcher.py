@@ -32,11 +32,7 @@ def main():
  action=sys.argv[1] if len(sys.argv)>1 else ''
  if action not in ('init-source','init-download','recover-upload','status'):raise ValueError('Start gameplay from Steam. Administrative commands: init-source, init-download, recover-upload, status.')
  c,raw,base=load_settings();base.mkdir(parents=True,exist_ok=True)
- lock=base/'active.lock'
- try:fd=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600)
- except FileExistsError:raise ValueError('Sync is already active, or an old lock requires process inspection.')
- os.write(fd,str(os.getpid()).encode());os.close(fd)
- try:
+ with f.sync_lock(base/'active.lock'):
   f.ensure_closed()
   if (base/'apply-journal.json').exists():raise ValueError('Unfinished file transaction; inspect backups.')
   r=Remote(raw);p=base/'state.json'
@@ -57,7 +53,6 @@ def main():
   else:
    if not state:raise ValueError('No baseline for recovery.')
    publish(c,r,p,state['revision']);(base/'pending.json').unlink(missing_ok=True)
- finally:lock.unlink(missing_ok=True)
 if __name__=='__main__':
  try:main()
  except Exception as e:f.log('Sync stopped: '+str(e));sys.exit(1)

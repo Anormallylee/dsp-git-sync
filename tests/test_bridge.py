@@ -1,4 +1,4 @@
-import unittest,tempfile
+import json,unittest,tempfile
 from pathlib import Path
 from unittest.mock import patch
 import git_sync as g
@@ -18,6 +18,29 @@ class SteamLifecycle(GitFixture,unittest.TestCase):
  def test_pending_plus_new_remote_blocks_start(self):
   v=self.initialize();fs.atomic(self.sb.parent/'pending.json',{'parent':v});(self.a['data']/'Save/a.dsv').write_bytes(b'A');g.publish(self.a,self.ra,self.sa,v)
   with self.assertRaises(ValueError):bridge.prepare(self.b,self.rb,self.sb.parent)
+ def test_offline_session_blocks_remote_change_without_overwriting_local_save(self):
+  v=self.initialize();(self.b['data']/'Save/a.dsv').write_bytes(b'played offline')
+  (self.a['data']/'Save/a.dsv').write_bytes(b'played elsewhere');g.publish(self.a,self.ra,self.sa,v)
+  with self.assertRaisesRegex(ValueError,'Previous session is unpublished'):
+   bridge.prepare(self.b,self.rb,self.sb.parent,offline_pending=True)
+  self.assertEqual((self.b['data']/'Save/a.dsv').read_bytes(),b'played offline')
+  self.assertEqual(json.loads((self.sb.parent/'pending.json').read_text())['entry'],'offline')
+ def test_preflight_network_failure_offers_offline_start(self):
+  ipc=self.sb.parent/'ipc';sid='12345678-1234-1234-1234-123456789abc'
+  with patch.object(bridge.l,'Remote',return_value=self.rb),patch.object(bridge,'prepare',side_effect=RuntimeError('network')):
+   bridge.session(self.b,{},self.sb.parent,ipc,sid)
+  out=ipc/'sessions'/sid
+  self.assertTrue((out/'offline-allowed').exists())
+  self.assertEqual((out/'error').read_text(),'network')
+ def test_unfinished_transaction_never_offers_offline_start(self):
+  ipc=self.sb.parent/'ipc';sid='12345678-1234-1234-1234-123456789abc'
+  self.sb.parent.mkdir(parents=True,exist_ok=True)
+  (self.sb.parent/'apply-journal.json').write_text('{}')
+  with patch.object(bridge.l,'Remote',return_value=self.rb),patch.object(bridge,'prepare',side_effect=ValueError('journal')):
+   bridge.session(self.b,{},self.sb.parent,ipc,sid)
+  out=ipc/'sessions'/sid
+  self.assertFalse((out/'offline-allowed').exists())
+  self.assertEqual((out/'error').read_text(),'journal')
  def test_journal_blocks_even_when_remote_unchanged(self):
   self.initialize();(self.sb.parent/'apply-journal.json').write_text('{}')
   with self.assertRaises(ValueError):bridge.prepare(self.b,self.rb,self.sb.parent)

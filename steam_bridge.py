@@ -4,11 +4,13 @@ from pathlib import Path
 import launcher as l
 import git_sync as g
 
-def prepare(c,r,base):
+def prepare(c,r,base,offline_pending=False):
  l.f.ensure_closed()
  if (base/'apply-journal.json').exists():raise ValueError('Unfinished file transaction; inspect backup before starting.')
  p=base/'state.json';g.recover_publish(c,r,p);state=g.load_state(r,p)
  if state is None:raise ValueError('Initialize this device before the first Steam launch.')
+ if offline_pending and not (base/'pending.json').exists():
+  l.atomic(base/'pending.json',{'started':l.f.token(),'parent':state['revision'],'entry':'offline'})
  remote=r.fetch()
  if remote is None:raise ValueError('Remote data branch is missing.')
  if remote!=state['revision']:
@@ -30,28 +32,34 @@ def session(c,raw,base,ipc,sid):
   write(out/'status.txt',text)
   l.f.log(time.strftime('%Y-%m-%d %H:%M:%S')+' '+sid+' '+text)
  status('正在检查 Git 远端最新状态，请勿关闭此窗口。')
- lock=base/'active.lock';fd=None
+ lock_acquired=False
  try:
-  fd=os.open(lock,os.O_CREAT|os.O_EXCL|os.O_WRONLY,0o600);os.write(fd,str(os.getpid()).encode());os.close(fd)
-  if (out/'cancel').exists():raise ValueError('启动已取消。')
-  r=l.Remote(raw);parent=prepare(c,r,base)
-  if (out/'cancel').exists():raise ValueError('启动已取消；本地数据保留。')
-  status('同步检查完成，正在启动游戏。');write(out/'ready','ok')
-  deadline=time.monotonic()+180
-  while not (out/'started').exists():
-   if (out/'cancel').exists() or time.monotonic()>deadline:raise ValueError('游戏未启动；保留本地状态，下次检查后重试。')
-   time.sleep(1)
-  status('游戏运行中。退出后将自动上传，请保留同步窗口。')
-  absent=0
-  while absent<5:
-   time.sleep(2);absent=0 if l.running() else absent+1
-  status('游戏已退出，正在增量上传最终状态。完成前不要切换设备。')
-  finish(c,r,base,parent)
-  status('同步完成，可以换设备。');write(out/'done','ok')
+  with l.f.sync_lock(base/'active.lock'):
+   lock_acquired=True
+   if (out/'cancel').exists():raise ValueError('启动已取消。')
+   r=l.Remote(raw);parent=prepare(c,r,base,(ipc/'offline-pending').exists())
+   if (out/'cancel').exists():raise ValueError('启动已取消；本地数据保留。')
+   status('同步检查完成，正在启动游戏。');write(out/'ready','ok')
+   deadline=time.monotonic()+180
+   while not (out/'started').exists():
+    if (out/'cancel').exists() or time.monotonic()>deadline:raise ValueError('游戏未启动；保留本地状态，下次检查后重试。')
+    time.sleep(1)
+   status('游戏运行中。退出后将自动上传，请保留同步窗口。')
+   absent=0
+   while absent<5:
+    time.sleep(2);absent=0 if l.running() else absent+1
+   status('游戏已退出，正在增量上传最终状态。完成前不要切换设备。')
+   finish(c,r,base,parent)
+   (ipc/'offline-pending').unlink(missing_ok=True)
+   status('同步完成，可以换设备。');write(out/'done','ok')
  except Exception as e:
-  status('同步已停止：'+str(e));write(out/'error',str(e));traceback.print_exc()
+  status('同步已停止：'+str(e));traceback.print_exc()
+  if lock_acquired and not (out/'cancel').exists() and not (base/'apply-journal.json').exists():
+   try:l.f.ensure_closed()
+   except ValueError:pass
+   else:write(out/'offline-allowed','ok')
+  write(out/'error',str(e))
  finally:
-  if fd is not None:lock.unlink(missing_ok=True)
   (ipc/'requests'/(sid+'.request')).unlink(missing_ok=True)
 
 def main():

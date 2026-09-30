@@ -1,5 +1,6 @@
 """Read-only inventory of supported DSP user data and loader files."""
 import os,sys,json,hashlib,datetime,uuid,subprocess,unicodedata
+from contextlib import contextmanager
 from pathlib import Path
 TREES=['data/Save/','data/Blueprint/','data/Blueprints/','game/BepInEx/core/','game/BepInEx/plugins/','game/BepInEx/patchers/','game/BepInEx/config/']
 FILES=['game/winhttp.dll','game/doorstop_config.ini','game/.doorstop_version']
@@ -11,6 +12,26 @@ def sha(p):
   for b in iter(lambda:f.read(4194304),b''):h.update(b)
  return h.hexdigest()
 def token():return datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-'+uuid.uuid4().hex[:8]
+@contextmanager
+def sync_lock(path):
+ path=Path(path);path.parent.mkdir(parents=True,exist_ok=True)
+ with path.open('a+b') as handle:
+  try:
+   if os.name=='nt':
+    import msvcrt
+    handle.seek(0,os.SEEK_END)
+    if handle.tell()==0:handle.write(b'0');handle.flush()
+    handle.seek(0);msvcrt.locking(handle.fileno(),msvcrt.LK_NBLCK,1)
+   else:
+    import fcntl
+    fcntl.flock(handle.fileno(),fcntl.LOCK_EX|fcntl.LOCK_NB)
+  except (BlockingIOError,OSError):raise ValueError('Sync is already active.') from None
+  handle.seek(0);handle.truncate();handle.write(str(os.getpid()).encode());handle.flush()
+  try:yield
+  finally:
+   if os.name=='nt':
+    handle.seek(0);msvcrt.locking(handle.fileno(),msvcrt.LK_UNLCK,1)
+   else:fcntl.flock(handle.fileno(),fcntl.LOCK_UN)
 def inventory(roots,require_complete=True):
  result={}
  for key,p in targets(roots).items():

@@ -6,6 +6,7 @@
 #include <wchar.h>
 static wchar_t folder[32768];
 static void marker(const wchar_t *name){wchar_t p[32768];swprintf(p,32768,L"%ls\\%ls",folder,name);HANDLE h=CreateFileW(p,GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);if(h!=INVALID_HANDLE_VALUE)CloseHandle(h);}
+static int marker_in(const wchar_t *dir,const wchar_t *name){wchar_t p[32768];swprintf(p,32768,L"%ls\\%ls",dir,name);HANDLE h=CreateFileW(p,GENERIC_WRITE,FILE_SHARE_READ,NULL,CREATE_ALWAYS,FILE_ATTRIBUTE_NORMAL,NULL);if(h==INVALID_HANDLE_VALUE)return 0;CloseHandle(h);return 1;}
 static BOOL WINAPI cancelled(DWORD type){marker(L"cancel");return FALSE;}
 static int exists(const wchar_t *name){wchar_t p[32768];swprintf(p,32768,L"%ls\\%ls",folder,name);return GetFileAttributesW(p)!=INVALID_FILE_ATTRIBUTES;}
 static void status(void){static char prev[8192]="";char buf[8192]={0};wchar_t p[32768];swprintf(p,32768,L"%ls\\status.txt",folder);FILE *f=_wfopen(p,L"rb");if(f){fread(buf,1,sizeof(buf)-1,f);fclose(f);if(strcmp(prev,buf)){printf("%s\n",buf);fflush(stdout);strcpy(prev,buf);}}}
@@ -32,11 +33,20 @@ int wmain(int argc,wchar_t **argv){
   CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
  }
  puts("Checking Git remote before game launch...");fflush(stdout);
- if(!waitfor(L"ready")){Sleep(10000);return 8;}
+ int offline=0;
+ if(!waitfor(L"ready")){
+  if(!exists(L"offline-allowed")){Sleep(10000);return 8;}
+  int choice=MessageBoxW(NULL,L"启动前同步失败。具体原因见同步窗口。\n\n可以继续在本机离线游玩，但本次退出后不会自动上传。下次启动时会重新检查同步状态。\n\n是否离线启动游戏？",L"戴森球计划 · 同步失败",MB_YESNO|MB_ICONWARNING|MB_DEFBUTTON2|MB_SYSTEMMODAL);
+  if(choice!=IDYES){Sleep(10000);return 8;}
+  if(!marker_in(ipc,L"offline-pending")){puts("Could not record offline state; game not started.");Sleep(10000);return 12;}
+  marker(L"offline");offline=1;
+  puts("Launching offline. This session will not upload after exit.");fflush(stdout);
+ }
  cmd[0]=0;for(int i=1;i<argc;i++){if(!quote(part,32768,argv[i])||wcslen(cmd)+wcslen(part)+2>=32768){marker(L"cancel");return 9;}if(i>1)wcscat(cmd,L" ");wcscat(cmd,part);}
  wcscpy(cwd,argv[1]);wchar_t *slash=wcsrchr(cwd,L'\\');if(slash)*slash=0;
  STARTUPINFOW si={.cb=sizeof(si)};PROCESS_INFORMATION pi;
  if(!CreateProcessW(argv[1],cmd,NULL,NULL,FALSE,0,NULL,slash?cwd:NULL,&si,&pi)){marker(L"cancel");printf("Game launch failed: %lu\n",GetLastError());Sleep(10000);return 10;}
- marker(L"started");puts("Game running. Sync will continue after exit.");fflush(stdout);WaitForSingleObject(pi.hProcess,INFINITE);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);marker(L"exited");
+ marker(L"started");puts(offline?"Game running offline; no upload will occur after exit.":"Game running. Sync will continue after exit.");fflush(stdout);WaitForSingleObject(pi.hProcess,INFINITE);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);marker(L"exited");
+ if(offline){puts("Offline game closed. Local progress was not uploaded.");fflush(stdout);Sleep(5000);ReleaseMutex(mutex);CloseHandle(mutex);return 0;}
  puts("Game closed. Waiting for upload...");fflush(stdout);int ok=waitfor(L"done");Sleep(ok?5000:15000);ReleaseMutex(mutex);CloseHandle(mutex);return ok?0:11;
 }

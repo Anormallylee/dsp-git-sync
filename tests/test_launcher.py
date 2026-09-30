@@ -1,7 +1,18 @@
-import unittest,json
+import unittest,json,tempfile
+from pathlib import Path
 from unittest.mock import patch
 from test_git_sync import GitFixture
 import launcher
+import sync_core
+
+class LockRecovery(unittest.TestCase):
+ def test_stale_lock_file_does_not_block_but_live_lock_does(self):
+  with tempfile.TemporaryDirectory() as directory:
+   lock=Path(directory)/'active.lock';lock.write_text('63596')
+   with sync_core.sync_lock(lock):
+    with self.assertRaisesRegex(ValueError,'already active'):
+     with sync_core.sync_lock(lock):pass
+   with sync_core.sync_lock(lock):pass
 
 class AdminRecovery(GitFixture,unittest.TestCase):
  def test_initial_source_can_resume_uncertain_push(self):
