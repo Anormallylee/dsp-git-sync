@@ -9,6 +9,7 @@ class GitFixture:
   self.assertTrue(hasattr(g,'Remote'),'Git transport is not implemented')
   self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup);self.root=Path(self.tmp.name)
   self.origin=self.root/'origin.git';subprocess.run(['git','init','--bare',str(self.origin)],check=True,capture_output=True)
+  subprocess.run(['git','--git-dir='+str(self.origin),'config','uploadpack.allowFilter','true'],check=True)
   self.a=self.device('a');self.b=self.device('b');self.sa=self.root/'a-state/state.json';self.sb=self.root/'b-state/state.json'
   self.ra=g.Remote({'git_remote':str(self.origin),'git_cache':str(self.root/'a-cache')})
   self.rb=g.Remote({'git_remote':str(self.origin),'git_cache':str(self.root/'b-cache')})

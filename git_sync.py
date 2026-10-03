@@ -20,7 +20,10 @@ class Remote:
     raise ValueError('Local push URL must point to the same HTTPS repository through loopback, without embedded credentials.')
   if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._/-]*',self.branch) or '..' in self.branch or self.branch.endswith(('/','.lock')):raise ValueError('Invalid sync branch')
   self.repo=Path(raw['git_cache']).expanduser().resolve();self.repo.parent.mkdir(parents=True,exist_ok=True)
-  self.env=dict(os.environ,GIT_TERMINAL_PROMPT='0',GCM_INTERACTIVE='Never',GIT_LFS_SKIP_SMUDGE='1',LC_ALL='C')
+  self.env=dict(os.environ,GIT_TERMINAL_PROMPT='0',GCM_INTERACTIVE='Never',GIT_LFS_SKIP_SMUDGE='1',LC_ALL='C',GIT_TRACE_PACKET='0')
+  version=subprocess.run([self.bin,'--version'],env=self.env,capture_output=True,timeout=30)
+  match=re.search(rb'git version (\d+)\.(\d+)',version.stdout)
+  if version.returncode or not match or tuple(map(int,match.groups()))<(2,50):raise RuntimeError('Git 2.50 or newer is required to disable implicit historical blob downloads safely.')
   self.env.update(GIT_AUTHOR_NAME='DSP Git Sync',GIT_AUTHOR_EMAIL='dsp-sync@localhost',GIT_COMMITTER_NAME='DSP Git Sync',GIT_COMMITTER_EMAIL='dsp-sync@localhost')
   self.hooks=self.repo.parent/'empty-hooks';self.hooks.mkdir(exist_ok=True)
   if not (self.repo/'HEAD').exists():
@@ -32,6 +35,10 @@ class Remote:
    if self.run('rev-parse','--is-bare-repository').strip()!=b'true':raise ValueError('Sync cache must be a dedicated bare repository.')
    if self.run('remote','get-url','origin').decode().strip()!=self.remote:raise ValueError('Git cache belongs to another remote.')
   self.run('config','gc.auto','0')
+  self.run('config','remote.origin.promisor','true')
+  self.run('config','remote.origin.partialclonefilter','blob:none')
+  self.run('config','extensions.partialClone','origin')
+  self.local_env=dict(self.env,GIT_NO_LAZY_FETCH='1')
  def command(self,*args):
   return [self.bin,'-c','core.hooksPath='+str(self.hooks),'-c','core.autocrlf=false','-c','core.precomposeUnicode=true','-c','commit.gpgSign=false','--git-dir='+str(self.repo),*args]
  def run(self,*args,input=None,env=None):
@@ -41,11 +48,27 @@ class Remote:
    # errors generic and leave authentication to the user's normal Git tools.
    raise RuntimeError('Git '+args[0]+' failed. Check connectivity, credentials, and remote history; local progress is retained.')
   return p.stdout
+ def filter_capability(self):
+  # Private packet traces and helper diagnostics stay in memory, never in logs.
+  p=subprocess.run(self.command('-c','protocol.version=2','ls-remote','origin','refs/heads/'+self.branch),env=dict(self.env,GIT_TRACE_PACKET='1'),capture_output=True,timeout=3600)
+  if p.returncode:raise RuntimeError('Cannot check remote filtered-fetch capability. Check connectivity and credentials.')
+  if not any(re.search(rb'packet:.*< fetch=.*\bfilter\b',line) for line in p.stderr.splitlines()):raise RuntimeError('Remote must support Git protocol v2 filtered fetch; refusing an unfiltered history download.')
+  return p.stdout
  def fetch(self):
   ref='refs/heads/'+self.branch
-  if not self.run('ls-remote','origin',ref).strip():return None
-  self.run('fetch','--no-tags','--keep','origin','+'+ref+':refs/remotes/origin/'+self.branch)
+  if not self.filter_capability().strip():return None
+  self.run('-c','protocol.version=2','fetch','--no-tags','--keep','--filter=blob:none','origin','+'+ref+':refs/remotes/origin/'+self.branch)
   return self.run('rev-parse','refs/remotes/origin/'+self.branch).decode().strip()
+ def prefetch(self,oids):
+  unique=sorted(set(oids))
+  if not unique:return
+  rows=self.run('cat-file','--batch-check=%(objectname) %(objecttype)',input=('\n'.join(unique)+'\n').encode(),env=self.local_env).splitlines()
+  missing=[oid for oid,row in zip(unique,rows) if row.endswith(b' missing')]
+  if not missing:return
+  self.filter_capability()
+  # Have commits do not imply their promised blobs are local. Avoid thin-pack
+  # bases from missing intermediate saves, as Git's own demand fetch does.
+  for start in range(0,len(missing),128):self.run('-c','protocol.version=2','-c','fetch.negotiationAlgorithm=noop','fetch','--no-tags','--no-write-fetch-head','--filter=blob:none','origin',*missing[start:start+128])
  def ancestor(self,old,new):
   if not REV.fullmatch(old) or not REV.fullmatch(new):raise ValueError('Invalid revision')
   p=subprocess.run(self.command('merge-base','--is-ancestor',old,new),env=self.env,capture_output=True)
@@ -54,24 +77,35 @@ class Remote:
  def manifest(self,commit):
   if not commit or not REV.fullmatch(commit):raise ValueError('Missing or invalid remote revision.')
   entries={}
-  for row in self.run('ls-tree','-r','-l','-z',commit).split(b'\0'):
+  for row in self.run('ls-tree','-r','-z',commit,env=self.local_env).split(b'\0'):
    if not row:continue
-   meta,path=row.split(b'\t',1);mode,kind,oid,size=meta.split();name=path.decode('utf-8')
+   meta,path=row.split(b'\t',1);mode,kind,oid=meta.split();name=path.decode('utf-8')
    if mode!=b'100644' or kind!=b'blob':raise ValueError('Unsupported file mode in data repository.')
-   entries[name]=int(size)
-  if entries.get('manifest.json',0)>32*1024**2 or 'manifest.json' not in entries:raise ValueError('Missing or oversized data manifest.')
-  if entries.get('.gitattributes')!=len(ATTRIBUTES) or self.run('show',commit+':.gitattributes')!=ATTRIBUTES:raise ValueError('Unexpected Git attributes in data repository.')
-  m=json.loads(self.run('show',commit+':manifest.json'))
+   if name in entries:raise ValueError('Duplicate Git tree path.')
+   entries[name]=oid.decode()
+  if 'manifest.json' not in entries or '.gitattributes' not in entries:raise ValueError('Missing data manifest or attributes.')
+  self.prefetch([entries['manifest.json'],entries['.gitattributes']])
+  size=int(self.run('cat-file','-s',entries['manifest.json'],env=self.local_env))
+  if size>32*1024**2:raise ValueError('Oversized data manifest.')
+  if int(self.run('cat-file','-s',entries['.gitattributes'],env=self.local_env))!=len(ATTRIBUTES):raise ValueError('Unexpected Git attributes in data repository.')
+  if self.run('cat-file','blob',entries['.gitattributes'],env=self.local_env)!=ATTRIBUTES:raise ValueError('Unexpected Git attributes in data repository.')
+  m=json.loads(self.run('cat-file','blob',entries['manifest.json'],env=self.local_env))
   if m.get('format')!='dsp-git-sync-v1':raise ValueError('This branch is not a DSP Git Sync data branch.')
   fs.validate(m['files'])
-  expected={'.gitattributes':len(ATTRIBUTES),'manifest.json':entries['manifest.json']}
+  expected={'.gitattributes':len(ATTRIBUTES),'manifest.json':size}
   expected.update({'files/'+k:v['bytes'] for k,v in m['files'].items()})
-  if entries!=expected:raise ValueError('Git tree differs from the declared data manifest.')
+  if entries.keys()!=expected.keys():raise ValueError('Git tree differs from the declared data manifest.')
+  self.prefetch(entries.values())
+  sizes=self.run('cat-file','--batch-check=%(objectname) %(objecttype) %(objectsize)',input=('\n'.join(entries.values())+'\n').encode(),env=self.local_env).splitlines()
+  if len(sizes)!=len(entries):raise ValueError('Incomplete prefetched Git tree.')
+  for (name,oid),row in zip(entries.items(),sizes):
+   parts=row.split()
+   if len(parts)!=3 or parts[0].decode()!=oid or parts[1]!=b'blob' or int(parts[2])!=expected[name]:raise ValueError('Git tree differs from the declared data manifest.')
   return m
  def materialize(self,commit,dest):
   m=self.manifest(commit);dest=Path(dest);dest.mkdir(parents=True,exist_ok=True)
   allowed={'files/'+k:v for k,v in m['files'].items()};seen=set()
-  p=subprocess.Popen(self.command('archive','--format=tar',commit),env=self.env,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  p=subprocess.Popen(self.command('archive','--format=tar',commit),env=self.local_env,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
   try:
    with tarfile.open(fileobj=p.stdout,mode='r|') as archive:
     for item in archive:
@@ -84,6 +118,10 @@ class Remote:
      with archive.extractfile(item) as src,out.open('xb') as dst:shutil.copyfileobj(src,dst,4*1024*1024)
      if fs.f.sha(out)!=meta['sha256']:raise ValueError('Downloaded file checksum mismatch: '+item.name)
      seen.add(item.name)
+   # The streaming tar reader stops at its end markers before Git finishes
+   # writing padding. Drain the pipe before wait to avoid a Windows pipe
+   # deadlock with larger archives; do not retain the trailer in memory.
+   while p.stdout.read(65536):pass
    if p.wait()!=0 or seen!=set(allowed):raise ValueError('Incomplete Git archive.')
   finally:
    if p.poll() is None:p.kill();p.wait()
@@ -103,7 +141,7 @@ class Remote:
   stats={k.strip():int(v) for k,v in (line.split(':',1) for line in self.run('count-objects','-v').decode().splitlines())}
   if not force and stats.get('size',0)<65536 and stats.get('packs',0)<20:return
   fs.f.log('Compacting verified local Git cache.')
-  try:self.run('-c','pack.windowMemory=256m','-c','pack.threads=2','repack','-a','-d','-l','--window=10','--depth=20')
+  try:self.run('-c','pack.windowMemory=256m','-c','pack.threads=2','repack','-a','-d','-l','--no-write-bitmap-index','--window=10','--depth=20',env=self.local_env)
   except RuntimeError:fs.f.log('Git cache compaction deferred; verified progress is retained.')
  def push(self,commit,parent):
   # A normal push rejects non-fast-forward history; never use force.
