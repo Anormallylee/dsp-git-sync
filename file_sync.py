@@ -37,7 +37,9 @@ def group(k):
  if k.startswith('data/Save/'):return 'save:'+k.rsplit('.',1)[0].casefold()
  if k.startswith('game/'):return 'mods'
  return 'blueprint:'+k.casefold()
+def sync_files(files):return {k:v for k,v in files.items() if not f.excluded_save(k)}
 def merge(base,local,remote):
+ base,local,remote=map(sync_files,(base,local,remote))
  result={};keys=set(base)|set(local)|set(remote)
  for g in {group(k) for k in keys if not group(k).startswith('blueprint:')}:
   ks={k for k in keys if group(k)==g}

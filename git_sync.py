@@ -95,17 +95,29 @@ class Remote:
   expected={'.gitattributes':len(ATTRIBUTES),'manifest.json':size}
   expected.update({'files/'+k:v['bytes'] for k,v in m['files'].items()})
   if entries.keys()!=expected.keys():raise ValueError('Git tree differs from the declared data manifest.')
-  self.prefetch(entries.values())
-  sizes=self.run('cat-file','--batch-check=%(objectname) %(objecttype) %(objectsize)',input=('\n'.join(entries.values())+'\n').encode(),env=self.local_env).splitlines()
-  if len(sizes)!=len(entries):raise ValueError('Incomplete prefetched Git tree.')
-  for (name,oid),row in zip(entries.items(),sizes):
+  selected={name:oid for name,oid in entries.items() if not (name.startswith('files/') and fs.f.excluded_save(name[6:]))}
+  self.prefetch(selected.values())
+  sizes=self.run('cat-file','--batch-check=%(objectname) %(objecttype) %(objectsize)',input=('\n'.join(selected.values())+'\n').encode(),env=self.local_env).splitlines()
+  if len(sizes)!=len(selected):raise ValueError('Incomplete prefetched Git tree.')
+  for (name,oid),row in zip(selected.items(),sizes):
    parts=row.split()
    if len(parts)!=3 or parts[0].decode()!=oid or parts[1]!=b'blob' or int(parts[2])!=expected[name]:raise ValueError('Git tree differs from the declared data manifest.')
   return m
  def materialize(self,commit,dest):
   m=self.manifest(commit);dest=Path(dest);dest.mkdir(parents=True,exist_ok=True)
-  allowed={'files/'+k:v for k,v in m['files'].items()};seen=set()
-  p=subprocess.Popen(self.command('archive','--format=tar',commit),env=self.local_env,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
+  allowed={'files/'+k:v for k,v in fs.sync_files(m['files']).items()};seen=set()
+  omitted=['files/'+k for k in m['files'] if fs.f.excluded_save(k)]
+  tree=commit
+  if omitted:
+   # Archive traverses excluded blobs even with pathspecs. Build a local-only
+   # filtered tree, without changing commits or passing thousands of paths
+   # on the Windows command line.
+   with tempfile.TemporaryDirectory(dir=self.repo.parent) as td:
+    env=dict(self.local_env,GIT_INDEX_FILE=str(Path(td)/'index'))
+    self.run('read-tree',commit,env=env)
+    self.run('--work-tree='+td,'-c','core.bare=false','update-index','--force-remove','-z','--stdin',input=('\0'.join(omitted)+'\0').encode(),env=env)
+    tree=self.run('write-tree',env=env).decode().strip()
+  p=subprocess.Popen(self.command('archive','--format=tar',tree),env=self.local_env,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL)
   try:
    with tarfile.open(fileobj=p.stdout,mode='r|') as archive:
     for item in archive:
@@ -187,7 +199,7 @@ def receive(c,r,statefile,commit):
  if (base/'publish-attempt.json').exists():raise ValueError('Recover the interrupted upload before receiving.')
  current=fs.scan(c,False);state=load_state(r,statefile)
  if r.fetch()!=commit:raise ValueError('Remote changed before import; retry.')
- m=r.manifest(commit);remote=m['files']
+ m=r.manifest(commit);remote=fs.sync_files(m['files'])
  if state:
   if not r.ancestor(state['revision'],commit):raise ValueError('Remote history was rewritten; refusing to replace progress.')
   desired=fs.merge(state['files'],current,remote)

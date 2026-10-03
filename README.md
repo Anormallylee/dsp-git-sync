@@ -164,6 +164,8 @@ Mac 后台进程每秒检查一次本地启动请求，不持续轮询远端。W
 
 同步：`Save/*.dsv`、`*.moddsv`、`Blueprint/`、`Blueprints/`、BepInEx 的 core/plugins/patchers/config，以及 Doorstop 加载文件。
 
+存档范围排除 `Codex-batched-dismantle-test`、`_autosave_errored` 和 `_autosave_0` 至 `_autosave_3` 的 `.dsv` / `.moddsv` 文件，保留 `_lastexit_` 退出存档与手动存档。排除项仅留在各设备本地，不参与下载、导入、冲突检测或后续上传；旧远端仍包含这些文件时也会跳过。下一次成功上传会从最新 Git 状态移除已跟踪的排除项，不删除本地文件或重写历史。两端同步工具都应升级，否则旧客户端仍会同步这些文件。
+
 同步范围不含游戏主程序、游戏资源、游戏显示设置、系统凭据存储和同步工具的本机配置。**Mod 配置在同步范围内，工具不会自动识别其中的敏感字段，数据仓库应保持私有。**除单独列入范围的 `.doorstop_version` 外，扫描目录中的隐藏名称项及旧诊断 StutterProbe Mod 会被排除。远端内容必须通过完整清单、路径、文件类型和 SHA-256 校验。
 
 备份和远端提交历史会保留。下载使用 Git protocol v2 的 `blob:none` 过滤：保留提交和目录元数据用于同步基线、祖先关系及冲突检查，仅按对象 ID 获取最新状态所需且本地缺少的文件内容，跳过中间存档版本。已有完整缓存可直接迁移并复用对象，不需要删除缓存或重写远端历史。服务器必须支持 filtered fetch，否则启动前明确停止，禁止静默回退为完整历史下载。私有 GitLab 可由管理员启用 `uploadpack.allowFilter=true`；客户端要求 Git 2.50 或更新版本，以可靠禁用隐式对象下载；旧版本会明确停止。Windows 和 macOS 都需检查 `git --version`。

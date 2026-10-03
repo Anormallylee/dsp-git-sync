@@ -3,6 +3,10 @@ import os,sys,json,hashlib,datetime,uuid,subprocess,unicodedata
 from pathlib import Path
 TREES=['data/Save/','data/Blueprint/','data/Blueprints/','game/BepInEx/core/','game/BepInEx/plugins/','game/BepInEx/patchers/','game/BepInEx/config/']
 FILES=['game/winhttp.dll','game/doorstop_config.ini','game/.doorstop_version']
+EXCLUDED_SAVE_STEMS={'codex-batched-dismantle-test','_autosave_errored',*['_autosave_'+str(i) for i in range(4)]}
+def excluded_save(key):
+ p=Path(key)
+ return key.startswith('data/Save/') and p.suffix.lower() in ('.dsv','.moddsv') and p.stem.casefold() in EXCLUDED_SAVE_STEMS
 def targets(roots):return {k:Path(roots[k.split('/')[0]])/k.split('/',1)[1].rstrip('/') for k in TREES+FILES}
 def excluded(p):return any(x.lower().startswith('.') for x in p.parts) or any('stutterprobe' in x.lower() for x in p.parts)
 def sha(p):
@@ -22,6 +26,7 @@ def inventory(roots,require_complete=True):
     if f.is_symlink():raise ValueError('范围内有符号链接：'+str(f))
     if f.is_file() and not excluded(f.relative_to(p)) and not (key=='data/Save/' and f.suffix not in ['.dsv','.moddsv']):
      name=unicodedata.normalize('NFC',key+f.relative_to(p).as_posix())
+     if excluded_save(name):continue
      if name in result:raise ValueError('Unicode-normalized paths collide: '+name)
      result[name]=f
  if require_complete and not any(k.startswith('data/Save/') and k.endswith('.dsv') for k in result):raise ValueError('没有存档。')
